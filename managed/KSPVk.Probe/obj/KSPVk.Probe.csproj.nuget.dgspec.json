@@ -1,0 +1,57 @@
+{
+  "format": 1,
+  "restore": {
+    "C:\\Steam\\steamapps\\common\\Kerbal Space Program\\KSPVk\\managed\\KSPVk.Probe\\KSPVk.Probe.csproj": {}
+  },
+  "projects": {
+    "C:\\Steam\\steamapps\\common\\Kerbal Space Program\\KSPVk\\managed\\KSPVk.Probe\\KSPVk.Probe.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "C:\\Steam\\steamapps\\common\\Kerbal Space Program\\KSPVk\\managed\\KSPVk.Probe\\KSPVk.Probe.csproj",
+        "projectName": "KSPVk.Probe",
+        "projectPath": "C:\\Steam\\steamapps\\common\\Kerbal Space Program\\KSPVk\\managed\\KSPVk.Probe\\KSPVk.Probe.csproj",
+        "packagesPath": "C:\\Users\\cguan28\\.nuget\\packages\\",
+        "outputPath": "C:\\Steam\\steamapps\\common\\Kerbal Space Program\\KSPVk\\managed\\KSPVk.Probe\\obj\\",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "C:\\Users\\cguan28\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net472"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net472": {
+            "targetAlias": "net472",
+            "projectReferences": {}
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        }
+      },
+      "frameworks": {
+        "net472": {
+          "targetAlias": "net472",
+          "dependencies": {
+            "Microsoft.NETFramework.ReferenceAssemblies": {
+              "suppressParent": "All",
+              "target": "Package",
+              "version": "[1.0.3, )"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Users\\cguan28\\.dotnet\\sdk\\8.0.425\\RuntimeIdentifierGraph.json"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,81 @@
+#version 450
+// Enhanced IBL (Phase 8b), one pass per define. DOWN: linearise the rendered cube (gamma, blended like the main pass) into the source chain,
+// then 2x2 mips. PREF: GGX-prefiltered specular mips (filtered importance sampling). SH: diffuse irradiance as 9 SH coefficients.
+layout(set = 0, binding = 0) uniform sampler2DArray Raw;
+layout(set = 0, binding = 1) uniform samplerCube Src;
+layout(set = 0, binding = 2, rgba16f) uniform image2DArray Ws[8];   // source mips
+layout(set = 0, binding = 3, rgba16f) uniform image2DArray Wl[8];   // prefiltered mips
+layout(std430, set = 0, binding = 4) buffer IblSH { vec4 c[9]; } O;
+layout(push_constant) uniform PP { ivec4 a; vec4 b; } pc;              // a.x: mip; b.x: perceptual roughness, b.y: solid angle of a source texel
+#ifdef SH
+layout(local_size_x = 256) in;
+#else
+layout(local_size_x = 8, local_size_y = 8) in;
+#endif
+vec3 dirOf(int f, vec2 uv) {   // face texel -> direction (Vulkan cube face convention)
+    vec2 s = uv * 2 - 1;
+    return normalize(f == 0 ? vec3(1, -s.y, -s.x) : f == 1 ? vec3(-1, -s.y, s.x) : f == 2 ? vec3(s.x, 1, s.y) : f == 3 ? vec3(s.x, -1, -s.y) : f == 4 ? vec3(s.x, -s.y, 1) : vec3(-s.x, -s.y, -1));
+}
+
+#ifdef DOWN
+void main() {
+    ivec3 p = ivec3(gl_GlobalInvocationID); int m = pc.a.x;
+    if (any(greaterThanEqual(p.xy, imageSize(Ws[m]).xy))) return;
+    vec3 c;
+    if (m == 0) c = pow(max(texelFetch(Raw, p, 0).rgb, vec3(0)), vec3(2.2));
+    else { ivec3 q = ivec3(p.xy * 2, p.z); c = (imageLoad(Ws[m - 1], q).rgb + imageLoad(Ws[m - 1], q + ivec3(1, 0, 0)).rgb + imageLoad(Ws[m - 1], q + ivec3(0, 1, 0)).rgb + imageLoad(Ws[m - 1], q + ivec3(1, 1, 0)).rgb) * 0.25; }
+    imageStore(Ws[m], p, vec4(c, 1));
+}
+#endif
+
+#ifdef PREF
+float rad2(uint i) { return float(bitfieldReverse(i)) * 2.3283064365386963e-10; }
+void main() {
+    ivec3 p = ivec3(gl_GlobalInvocationID); int m = pc.a.x; ivec2 sz = imageSize(Wl[m]).xy;
+    if (any(greaterThanEqual(p.xy, sz))) return;
+    vec3 N = dirOf(p.z, (vec2(p.xy) + 0.5) / vec2(sz));
+    if (m == 0) { imageStore(Wl[0], p, vec4(textureLod(Src, N, 0).rgb, 1)); return; }
+    float a = pc.b.x * pc.b.x, a2 = a * a;
+    vec3 T = normalize(cross(abs(N.z) < 0.999 ? vec3(0, 0, 1) : vec3(1, 0, 0), N)), B = cross(N, T), acc = vec3(0);
+    float w = 0;
+    const uint NS = 32u;
+    for (uint i = 0u; i < NS; i++) {   // V = N: pdf(L) = D / 4
+        vec2 xi = vec2(float(i) / NS, rad2(i));
+        float ph = 6.2831853 * xi.x, ct = sqrt((1 - xi.y) / (1 + (a2 - 1) * xi.y)), st = sqrt(1 - ct * ct);
+        vec3 H = T * (st * cos(ph)) + B * (st * sin(ph)) + N * ct, L = 2 * ct * H - N;
+        float nl = dot(N, L);
+        if (nl <= 0) continue;
+        float d = ct * ct * (a2 - 1) + 1, pdf = a2 / (12.5663706 * d * d);
+        acc += textureLod(Src, L, max(0.5 * log2(1 / (NS * pdf * pc.b.y)) + 1, 0)).rgb * nl; w += nl;
+    }
+    imageStore(Wl[m], p, vec4(acc / max(w, 1e-4), 1));
+}
+#endif
+
+#ifdef SH
+shared vec3 s[256]; shared float sw[256];
+void main() {
+    uint t = gl_LocalInvocationIndex; int m = pc.a.x; ivec2 sz = imageSize(Ws[m]).xy;
+    vec3 c[9]; for (int k = 0; k < 9; k++) c[k] = vec3(0);
+    float ws = 0; int n = sz.x * sz.y;
+    for (int i = int(t); i < n * 6; i += 256) {
+        int f = i / n, j = i % n;
+        vec2 uv = (vec2(j % sz.x, j / sz.x) + 0.5) / vec2(sz), st = uv * 2 - 1;
+        float w = 1 / pow(1 + dot(st, st), 1.5);   // texel solid angle
+        vec3 d = dirOf(f, uv), L = imageLoad(Ws[m], ivec3(j % sz.x, j / sz.x, f)).rgb * w;
+        c[0] += L * 0.282095; c[1] += L * 0.488603 * d.y; c[2] += L * 0.488603 * d.z; c[3] += L * 0.488603 * d.x;
+        c[4] += L * 1.092548 * d.x * d.y; c[5] += L * 1.092548 * d.y * d.z; c[6] += L * 0.315392 * (3 * d.z * d.z - 1);
+        c[7] += L * 1.092548 * d.x * d.z; c[8] += L * 0.546274 * (d.x * d.x - d.y * d.y);
+        ws += w;
+    }
+    sw[t] = ws; barrier();
+    for (uint h = 128; h > 0; h >>= 1) { if (t < h) sw[t] += sw[t + h]; barrier(); }
+    float norm = 12.5663706 / sw[0];
+    const float A[9] = float[9](1, 0.666667, 0.666667, 0.666667, 0.25, 0.25, 0.25, 0.25, 0.25);   // cosine lobe / pi
+    for (int k = 0; k < 9; k++) {
+        barrier(); s[t] = c[k]; barrier();
+        for (uint h = 128; h > 0; h >>= 1) { if (t < h) s[t] += s[t + h]; barrier(); }
+        if (t == 0) O.c[k] = vec4(s[0] * norm * A[k], 0);
+    }
+}
+#endif

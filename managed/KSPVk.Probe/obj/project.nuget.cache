@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "dgSpecHash": "umjmvXFPs5Y=",
+  "success": true,
+  "projectFilePath": "C:\\Steam\\steamapps\\common\\Kerbal Space Program\\KSPVk\\managed\\KSPVk.Probe\\KSPVk.Probe.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\cguan28\\.nuget\\packages\\microsoft.netframework.referenceassemblies\\1.0.3\\microsoft.netframework.referenceassemblies.1.0.3.nupkg.sha512",
+    "C:\\Users\\cguan28\\.nuget\\packages\\microsoft.netframework.referenceassemblies.net472\\1.0.3\\microsoft.netframework.referenceassemblies.net472.1.0.3.nupkg.sha512"
+  ],
+  "logs": []
+}

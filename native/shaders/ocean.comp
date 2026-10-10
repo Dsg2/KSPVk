@@ -1,0 +1,75 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Enhanced FFT ocean (8d): a 64 m, 128^2 Phillips spectrum (wind 8 m/s), one pass per define. SPEC: h(k, t) packed as two complex signals,
+// (h + i dh/dx) and (dh/dz + i div); FFT: 128-point Stockham radix-2 per row (a.x 0) or column (1), Wq[a.y] -> Wq[a.z]; NRM: slopes, divergence,
+// height with the (-1)^(x+y) shift; MIP: 2x2 box mips (a.x: destination mip). Layout mirrors gX in native/core/enhanced.inl.
+#define ENH
+#include "frame.glsl"
+layout(set = 0, binding = 4, rgba32f) uniform image2D Wq[2];
+layout(set = 0, binding = 5, rgba16f) uniform image2D Wn[8];
+layout(push_constant) uniform PX { ivec4 a; vec4 b; } px;
+const int N = 128; const float LP = 64, G = 9.81, A = 2.5e-5;
+#ifdef FFT
+layout(local_size_x = 64) in;
+#else
+layout(local_size_x = 8, local_size_y = 8) in;
+#endif
+
+#ifdef SPEC
+float hash(uint x) { x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return (float(x) + 0.5) / 4294967296.0; }
+vec2 h0(ivec2 m) {   // Phillips amplitude x a fixed Gaussian pair
+    vec2 k = vec2(m - N / 2) * (6.2831853 / LP); float kl = length(k);
+    if (kl < 1e-6) return vec2(0);
+    uint s = uint(m.x + m.y * N) * 2u + 1u;
+    float u1 = hash(s), u2 = hash(s + 7919u * 2654435761u), r = sqrt(-2 * log(u1));
+    const vec2 wd = vec2(0.958, 0.287); const float Lw = 8.0 * 8.0 / G;
+    float c = dot(k / kl, wd), ph = A * exp(-1 / (kl * kl * Lw * Lw)) / (kl * kl * kl * kl) * c * c * (c < 0 ? 0.1 : 1) * exp(-kl * kl * 0.01);
+    return r * vec2(cos(6.2831853 * u2), sin(6.2831853 * u2)) * sqrt(ph * 0.5);
+}
+vec2 cm(vec2 a, vec2 b) { return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x); }
+void main() {
+    ivec2 m = ivec2(gl_GlobalInvocationID.xy);
+    vec2 k = vec2(m - N / 2) * (6.2831853 / LP); float kl = length(k), w = sqrt(G * kl) * F.misc.y;
+    vec2 a = h0(m), b = h0((N - m) & (N - 1)), e = vec2(cos(w), sin(w));
+    vec2 h = cm(a, e) + cm(vec2(b.x, -b.y), vec2(e.x, -e.y));
+    imageStore(Wq[0], m, vec4(h * (1 - k.x), vec2(-h.y, h.x) * (k.y + kl)));   // (1 - kx) h = h + i (i kx h); i (kz + |k|) h = (i kz h) + i (|k| h)
+}
+#endif
+
+#ifdef FFT
+shared vec4 sb[2][N];
+vec4 tw(vec4 v, vec2 w) { return vec4(v.x * w.x - v.y * w.y, v.x * w.y + v.y * w.x, v.z * w.x - v.w * w.y, v.z * w.y + v.w * w.x); }
+void main() {
+    int i = int(gl_LocalInvocationIndex), l = int(gl_WorkGroupID.x);
+    ivec2 c0 = px.a.x == 0 ? ivec2(i, l) : ivec2(l, i), c1 = px.a.x == 0 ? ivec2(i + 64, l) : ivec2(l, i + 64);
+    sb[0][i] = imageLoad(Wq[px.a.y], c0); sb[0][i + 64] = imageLoad(Wq[px.a.y], c1);
+    barrier();
+    int s = 0;
+    for (int p = 1; p < N; p <<= 1) {   // inverse transform, Stockham autosort: no bit reversal
+        int k = i & (p - 1);
+        float an = 3.14159265 * float(k) / float(p);
+        vec4 u0 = sb[s][i], u1 = tw(sb[s][i + 64], vec2(cos(an), sin(an)));
+        int j = (i << 1) - k;
+        sb[s ^ 1][j] = u0 + u1; sb[s ^ 1][j + p] = u0 - u1;
+        s ^= 1; barrier();
+    }
+    imageStore(Wq[px.a.z], c0, sb[s][i]); imageStore(Wq[px.a.z], c1, sb[s][i + 64]);
+}
+#endif
+
+#ifdef NRM
+void main() {
+    ivec2 m = ivec2(gl_GlobalInvocationID.xy);
+    vec4 v = imageLoad(Wq[0], m) * (((m.x + m.y) & 1) != 0 ? -1.0 : 1.0);
+    imageStore(Wn[0], m, vec4(v.y, v.z, v.w, v.x));   // dh/dx, dh/dz, divergence, h
+}
+#endif
+
+#ifdef MIP
+void main() {
+    ivec2 m = ivec2(gl_GlobalInvocationID.xy), sz = imageSize(Wn[px.a.x]);
+    if (any(greaterThanEqual(m, sz))) return;
+    ivec2 q = m * 2;
+    imageStore(Wn[px.a.x], m, 0.25 * (imageLoad(Wn[px.a.x - 1], q) + imageLoad(Wn[px.a.x - 1], q + ivec2(1, 0)) + imageLoad(Wn[px.a.x - 1], q + ivec2(0, 1)) + imageLoad(Wn[px.a.x - 1], q + 1)));
+}
+#endif

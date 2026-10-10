@@ -1,0 +1,353 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// One source, one pass per define: HIZ, TAA, HIST, EXPO, BDOWN, BUP; 8c: GTAO (+ contact shadows), SSGI, DEN (temporal + spatial), RESOLVE; 8d: ZCOPY; 8f: SSR.
+#if defined(GTAO) || defined(SSGI) || defined(RESOLVE) || defined(SSR)
+#define FRAME
+#endif
+#include "post.glsl"
+#ifdef EXPO
+layout(local_size_x = 256) in;
+#elif defined(HIST)
+layout(local_size_x = 16, local_size_y = 16) in;   // one thread per histogram bin
+#else
+layout(local_size_x = 8, local_size_y = 8) in;
+#endif
+
+#ifdef HIZ
+// a.x: destination mip (0: from linear depth), a.y: source mip. Closest local depth; scaled-space and empty pixels count as infinitely far.
+float far(float d) { d = dec(d); return d > 0 ? d : 3.4e38; }
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy), sz = imageSize(Wz[pc.a.x]);
+    if (any(greaterThanEqual(p, sz))) return;
+    float z;
+    if (pc.a.x == 0) {
+        ivec2 m = textureSize(S[4], 0) - 1, q = p * 2;
+        z = min(min(far(texelFetch(S[4], min(q, m), 0).r), far(texelFetch(S[4], min(q + ivec2(1, 0), m), 0).r)),
+                min(far(texelFetch(S[4], min(q + ivec2(0, 1), m), 0).r), far(texelFetch(S[4], min(q + 1, m), 0).r)));
+    } else {
+        ivec2 m = imageSize(Wz[pc.a.y]) - 1, q = p * 2;
+        z = min(min(imageLoad(Wz[pc.a.y], min(q, m)).r, imageLoad(Wz[pc.a.y], min(q + ivec2(1, 0), m)).r),
+                min(imageLoad(Wz[pc.a.y], min(q + ivec2(0, 1), m)).r, imageLoad(Wz[pc.a.y], min(q + 1, m)).r));
+    }
+    imageStore(Wz[pc.a.x], p, vec4(z));
+}
+#endif
+
+#ifdef TAA
+// a.x: history read, a.y: history write (output size), a.z: reset; b.x: current-frame weight, b.yz: TAA jitter (uv, render scale only)
+vec3 ycc(vec3 c) { return vec3(0.25 * c.r + 0.5 * c.g + 0.25 * c.b, 0.5 * c.r - 0.5 * c.b, -0.25 * c.r + 0.5 * c.g - 0.25 * c.b); }
+vec3 rgb(vec3 y) { return vec3(y.x + y.y - y.z, y.x + y.z, y.x - y.y - y.z); }
+float key(float d) { d = dec(d); return d > 0 ? d : d < 0 ? 1e30 - d : 3e38; }
+vec3 catmull(int h, vec2 uv, vec2 sz) {   // 5-tap Catmull-Rom (corners dropped)
+    vec2 p = uv * sz, t1 = floor(p - 0.5) + 0.5, f = p - t1;
+    vec2 w0 = f * (-0.5 + f * (1 - 0.5 * f)), w1 = 1 + f * f * (-2.5 + 1.5 * f), w2 = f * (0.5 + f * (2 - 1.5 * f)), w3 = f * f * (-0.5 + 0.5 * f);
+    vec2 w12 = w1 + w2, t0 = (t1 - 1) / sz, t3 = (t1 + 2) / sz, t12 = (t1 + w2 / w12) / sz;
+    vec3 c = textureLod(S[h], vec2(t12.x, t0.y), 0).rgb * w12.x * w0.y + textureLod(S[h], vec2(t0.x, t12.y), 0).rgb * w0.x * w12.y
+           + textureLod(S[h], t12, 0).rgb * w12.x * w12.y + textureLod(S[h], vec2(t3.x, t12.y), 0).rgb * w3.x * w12.y
+           + textureLod(S[h], vec2(t12.x, t3.y), 0).rgb * w12.x * w3.y;
+    float w = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y;
+    return max(c / w, vec3(0));
+}
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy), sz = textureSize(S[0], 0), os = imageSize(Wc[pc.a.y]);
+    if (any(greaterThanEqual(p, os))) return;
+    vec2 uv = (vec2(p) + 0.5) / vec2(os);
+    vec3 lo = vec3(1e9), hi = vec3(-1e9);
+    float bk = 3.4e38, a = pc.b.x; ivec2 bq = p; vec4 c;
+    if (sz == os) {
+        c = texelFetch(S[0], p, 0);
+        for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+            ivec2 q = clamp(p + ivec2(x, y), ivec2(0), sz - 1);
+            vec3 n = ycc(texelFetch(S[0], q, 0).rgb); lo = min(lo, n); hi = max(hi, n);
+            float k = key(texelFetch(S[4], q, 0).r); if (k < bk) { bk = k; bq = q; }   // motion of the closest neighbour: moving edges keep their history
+        }
+    } else {   // TAAU (b.yz: jitter in uv): Gaussian over the 3x3 scene pixels nearest this output pixel; a close sample earns more weight against the history
+        vec2 ip = (uv + pc.b.yz) * vec2(sz) - 0.5, s = vec2(os) / vec2(sz); ivec2 b = ivec2(floor(ip + 0.5));
+        vec3 acc = vec3(0); float ws = 0, wm = 0;
+        for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+            ivec2 q = clamp(b + ivec2(x, y), ivec2(0), sz - 1);
+            vec3 n = texelFetch(S[0], q, 0).rgb; vec2 dv = (vec2(b + ivec2(x, y)) - ip) * s;   // distance in output pixels
+            float w = exp(-2.29 * dot(dv, dv)); acc += n * w; ws += w; wm = max(wm, w);
+            n = ycc(n); lo = min(lo, n); hi = max(hi, n);
+            float k = key(texelFetch(S[4], q, 0).r); if (k < bk) { bk = k; bq = q; }
+        }
+        c = vec4(acc / ws, texelFetch(S[0], clamp(b, ivec2(0), sz - 1), 0).a);
+        a = min(1.0, a * mix(0.5, 1.5, wm));
+    }
+    vec2 pu = uv - texelFetch(S[3], bq, 0).xy;
+    vec3 o = c.rgb;
+    if (pc.a.z == 0 && all(greaterThanEqual(pu, vec2(0))) && all(lessThanEqual(pu, vec2(1)))) {
+        vec3 h = ycc(catmull(pc.a.x, pu, vec2(os)));
+        vec3 ctr = (lo + hi) * 0.5, ext = max((hi - lo) * 0.5, vec3(1e-4)), d = h - ctr, r = abs(d / ext);   // clip towards the neighbourhood box centre
+        float m = max(r.x, max(r.y, r.z));
+        h = rgb(m > 1 ? ctr + d / m : h);
+        float wc = a / (1 + luma(c.rgb)), wh = (1 - a) / (1 + luma(h));   // luminance-weighted: no flicker from bright pixels
+        o = (c.rgb * wc + h * wh) / (wc + wh);
+    }
+    imageStore(Wc[pc.a.y], p, vec4(o, c.a));
+}
+#endif
+
+#ifdef HIST
+// a.x: source (S index); every 2nd pixel, covered local / scaled pixels only (the galaxy and empty sky do not set the exposure)
+shared uint h[256];
+void main() {
+    uint i = gl_LocalInvocationIndex;
+    h[i] = 0; barrier();
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy) * 2, sz = textureSize(S[pc.a.x], 0);
+    if (all(lessThan(p, sz))) {
+        vec4 c = texelFetch(S[pc.a.x], p, 0);
+        if (c.a > 0 && texelFetch(S[4], p * textureSize(S[4], 0) / sz, 0).r < 1e38) {
+            float l = luma(lin(c.rgb));
+            atomicAdd(h[l < 1e-5 ? 0 : uint(clamp((log2(l) + 12) / 16 * 254 + 1, 1, 255))], 1);
+        }
+    }
+    barrier();
+    if (h[i] > 0) atomicAdd(E.hist[i], h[i]);
+}
+#endif
+
+#ifdef EXPO
+// b: key, EV range, adaptation factor (1 = snap), user EV. Mean log luminance over the 40..95 % band, clamped to +-range EV around the key.
+shared float s[256], n[256];
+void main() {
+    uint i = gl_LocalInvocationIndex, c = E.hist[i];
+    E.hist[i] = 0;
+    s[i] = float(c); barrier();
+    for (uint k = 1; k < 256; k <<= 1) { float v = i >= k ? s[i - k] : 0; barrier(); s[i] += v; barrier(); }   // inclusive prefix sum
+    float tot = s[255], lo = tot * 0.4, hi = tot * 0.95, a = s[i] - c, b = s[i];
+    float w = max(0, min(b, hi) - max(a, lo));
+    barrier();   // everyone has read the totals before s is reused
+    n[i] = w; s[i] = w * (i == 0 ? -12 : (float(i) - 0.5) / 254 * 16 - 12);
+    barrier();
+    for (uint k = 128; k > 0; k >>= 1) { if (i < k) { s[i] += s[i + k]; n[i] += n[i + k]; } barrier(); }
+    if (i == 0 && n[0] > 0) {
+        float m = s[0] / n[0], t = clamp(log2(pc.b.x) - m, -pc.b.y, pc.b.y) + pc.b.w;
+        float cur = log2(max(E.v.x, 1e-6));
+        E.v.x = exp2(cur + (t - cur) * pc.b.z); E.v.y = m;
+    }
+}
+#endif
+
+#ifdef BDOWN
+// a.x: destination Wc, a.y: source (0: S[a.z] full-res with threshold; else S[5] lod a.y - 1); b.xy: source texel size; b.z threshold, b.w knee
+vec3 src(vec2 uv) { return pc.a.y == 0 ? lin(textureLod(S[pc.a.z], uv, 0).rgb) * expo() : textureLod(S[5], uv, pc.a.y - 1).rgb; }
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy), sz = imageSize(Wc[pc.a.x]);
+    if (any(greaterThanEqual(p, sz))) return;
+    vec2 uv = (vec2(p) + 0.5) / vec2(sz), t = pc.b.xy;
+    vec3 c = (src(uv) * 4 + src(uv - t) + src(uv + t) + src(uv + vec2(t.x, -t.y)) + src(uv - vec2(t.x, -t.y))) * 0.125;
+    if (pc.a.y == 0) {
+        float br = max(c.r, max(c.g, c.b)), k = pc.b.w, q = clamp(br - pc.b.z + k, 0, 2 * k);
+        c *= max(q * q / (4 * k + 1e-5), br - pc.b.z) / max(br, 1e-4);
+        c = min(c, vec3(64));
+    }
+    imageStore(Wc[pc.a.x], p, vec4(c, 1));
+}
+#endif
+
+#ifdef BUP
+// a.x: destination Wc (mip a.y - 1, accumulated), a.y: source lod of S[5]; b.xy: source texel size
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy), sz = imageSize(Wc[pc.a.x]);
+    if (any(greaterThanEqual(p, sz))) return;
+    vec2 uv = (vec2(p) + 0.5) / vec2(sz), t = pc.b.xy; float l = pc.a.y;
+    vec3 c = textureLod(S[5], uv + vec2(-2 * t.x, 0), l).rgb + textureLod(S[5], uv + vec2(2 * t.x, 0), l).rgb
+           + textureLod(S[5], uv + vec2(0, -2 * t.y), l).rgb + textureLod(S[5], uv + vec2(0, 2 * t.y), l).rgb
+           + 2 * (textureLod(S[5], uv + t, l).rgb + textureLod(S[5], uv - t, l).rgb + textureLod(S[5], uv + vec2(t.x, -t.y), l).rgb + textureLod(S[5], uv - vec2(t.x, -t.y), l).rgb);
+    imageStore(Wc[pc.a.x], p, vec4(imageLoad(Wc[pc.a.x], p).rgb + c / 12, 1));
+}
+#endif
+
+#ifdef GTAO
+// Half-res: (ao, contact, depth, 1). a.x: 1 GTAO (2 slices x 6 steps, XeGTAO integration), 2 contact shadows (12 steps towards the sun); b.x radius, b.y contact length (m)
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy), hs = imageSize(Wc[8]), fs = textureSize(S[4], 0);
+    if (any(greaterThanEqual(p, hs))) return;
+    ivec2 q = min(p * 2, fs - 1);
+    float d = dz(q);
+    if (d == 0) { imageStore(Wc[8], p, vec4(1, 1, 0, 1)); return; }
+    vec2 px = 1 / vec2(fs), uv = (vec2(q) + 0.5) * px;
+    vec3 P = vpos(uv, d), N = oct(texelFetch(S[6], q, 0).xy), V = normalize(-P);
+    float n0 = ign(vec2(p)), n1 = fract(n0 * 7.31 + 0.37), ao = 1, ct = 1;
+    float R = pc.b.x, rp = R * F.proj.x * 0.5 * float(fs.x) / d;
+    if ((pc.a.x & 1) != 0 && rp > 2) {
+        float vis = 0;
+        for (int s = 0; s < 2; s++) {
+            vec2 om = vec2(cos((float(s) + n0) * 1.5707963), sin((float(s) + n0) * 1.5707963));
+            vec3 dw = F.camR.xyz * om.x - F.camU.xyz * om.y, od = normalize(dw - V * dot(dw, V)), ax = cross(od, V);
+            vec3 np = N - ax * dot(N, ax); float npl = max(length(np), 1e-4), cn = clamp(dot(np, V) / npl, -1, 1);
+            float g = (dot(od, np) < 0 ? -1 : 1) * acos(cn), lo0 = sin(g), lo1 = -sin(g), h0 = lo0, h1 = lo1;
+            for (int j = 0; j < 6; j++) {
+                vec2 o = om * max(((float(j) + n1) / 6) * ((float(j) + n1) / 6) * rp, float(j) + 1.5) * px;
+                for (int k = 0; k < 2; k++) {
+                    vec2 su = k == 0 ? uv - o : uv + o;
+                    if (any(lessThan(su, vec2(0))) || any(greaterThan(su, vec2(1)))) continue;
+                    ivec2 sq = ivec2(su * vec2(fs)); float sd = dz(sq);
+                    if (sd == 0) continue;
+                    vec3 D = vpos((vec2(sq) + 0.5) * px, sd) - P; float l = length(D), c = dot(D, V) / max(l, 1e-4), wf = clamp((R - l) / (0.4 * R), 0, 1);
+                    if (k == 0) h0 = max(h0, mix(lo0, c, wf)); else h1 = max(h1, mix(lo1, c, wf));
+                }
+            }
+            float a0 = g + max(-acos(clamp(h0, -1, 1)) - g, -1.5707963), a1 = g + min(acos(clamp(h1, -1, 1)) - g, 1.5707963);
+            vis += npl * 0.25 * ((cn + 2 * a0 * sin(g) - cos(2 * a0 - g)) + (cn + 2 * a1 * sin(g) - cos(2 * a1 - g)));
+        }
+        ao = clamp(vis * 0.5, 0, 1);
+    }
+    vec3 L = F.lightDir.xyz;
+    if ((pc.a.x & 2) != 0 && d < 80 && dot(N, L) > 0) {
+        vec3 X0 = P + N * (0.01 + 0.002 * d);
+        for (int j = 0; j < 12; j++) {
+            vec3 X = X0 + L * (pc.b.y * (float(j) + n1) / 12);
+            vec2 su = suv(X);
+            if (any(lessThan(su, vec2(0))) || any(greaterThan(su, vec2(1)))) break;
+            float sd = dot(X, F.camF.xyz), zb = dz(ivec2(su * vec2(fs))), dd = sd - zb;
+            if (zb > 0 && dd > 0.01 + 0.003 * sd && dd < 0.4) { ct = 0; break; }
+        }
+        ct = mix(ct, 1, smoothstep(50, 80, d));
+    }
+    imageStore(Wc[8], p, vec4(ao, ct, d, 1));
+}
+#endif
+
+#ifdef SSGI
+// Half-res: one cosine-weighted ray, 14 steps; the hit's radiance from this frame's colour (rgb, depth). Misses add nothing: IBL already lights them.
+// b.x: ray length (m)
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy), hs = imageSize(Wc[9]), fs = textureSize(S[4], 0);
+    if (any(greaterThanEqual(p, hs))) return;
+    ivec2 q = min(p * 2, fs - 1);
+    float d = dz(q);
+    if (d == 0) { imageStore(Wc[9], p, vec4(0)); return; }
+    vec2 px = 1 / vec2(fs);
+    vec3 P = vpos((vec2(q) + 0.5) * px, d), N = oct(texelFetch(S[6], q, 0).xy);
+    float u1 = ign(vec2(p)), u2 = fract(ign(vec2(p.y, p.x) + 13.7) + 0.618034), tj = fract(u1 * 5.23 + u2), r = sqrt(u1), ph = 6.2831853 * u2;
+    vec3 Tg = normalize(cross(abs(N.y) < 0.99 ? vec3(0, 1, 0) : vec3(1, 0, 0), N)), Bt = cross(N, Tg);
+    vec3 dir = Tg * (r * cos(ph)) + Bt * (r * sin(ph)) + N * sqrt(max(1 - u1, 0)), X0 = P + N * (0.02 + 0.003 * d), col = vec3(0);
+    float len = min(pc.b.x, 0.5 * d + 1);
+    for (int j = 0; j < 14; j++) {
+        float t = len * ((float(j) + tj) / 14) * ((float(j) + tj) / 14) + 0.05;
+        vec3 X = X0 + dir * t; vec2 su = suv(X);
+        float sd = dot(X, F.camF.xyz);
+        if (sd <= 0 || any(lessThan(su, vec2(0))) || any(greaterThan(su, vec2(1)))) break;
+        ivec2 sq = ivec2(su * vec2(fs)); float zb = dz(sq);
+        if (zb > 0 && sd > zb + 0.02 && sd < zb + max(0.3, t * 0.3)) {
+            if (dot(oct(texelFetch(S[6], sq, 0).xy), dir) < 0.2) col = lin(textureLod(S[0], su, 0).rgb);
+            break;
+        }
+    }
+    imageStore(Wc[9], p, vec4(min(col, vec3(16)), d));
+}
+#endif
+
+#ifdef DEN
+// Half-res temporal + 3x3 bilateral filter. a.x: 0 AO (S[10], depth in z) / 1 GI (S[11], depth in w); a.y: history read (S), a.z: write (Wc), a.w: reset
+// b.x: new-frame weight, b.y: motion vectors valid
+float dep(vec4 v) { return pc.a.x == 0 ? v.z : v.w; }
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy), hs = imageSize(Wc[pc.a.z]);
+    if (any(greaterThanEqual(p, hs))) return;
+    int src = 10 + pc.a.x;
+    vec4 c0 = texelFetch(S[src], p, 0); float d = dep(c0);
+    if (d <= 0) { imageStore(Wc[pc.a.z], p, c0); return; }
+    vec4 acc = vec4(0); float ws = 0;
+    for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+        vec4 c = texelFetch(S[src], clamp(p + ivec2(x, y), ivec2(0), hs - 1), 0); float cd = dep(c);
+        float w = cd > 0 ? (x == 0 && y == 0 ? 2.0 : 1.0) * exp(-abs(cd - d) / (0.02 * d)) : 0;
+        acc += c * w; ws += w;
+    }
+    vec4 o = acc / max(ws, 1e-6);
+    vec2 pu = (vec2(p) + 0.5) / vec2(hs);
+    if (pc.b.y > 0) pu -= texelFetch(S[3], min(p * 2, textureSize(S[3], 0) - 1), 0).xy;
+    if (pc.a.w == 0 && all(greaterThanEqual(pu, vec2(0))) && all(lessThanEqual(pu, vec2(1)))) {
+        vec4 h = textureLod(S[pc.a.y], pu, 0); float hd = dep(h);
+        if (hd > 0 && abs(hd - d) < 0.05 * d) o = mix(h, o, pc.b.x);
+    }
+    if (pc.a.x == 0) o.z = d; else o.w = d;
+    imageStore(Wc[pc.a.z], p, o);
+}
+#endif
+
+#ifdef RESOLVE
+// Full-res, in place on the hdr image: depth-aware upsample of AO / contact / GI / reflections; the IBL reflection share (normal .z) is swapped for
+// SSR by its confidence, then ambient x AO, direct sun x contact, + albedo x GI (linear).
+// a.x: 1 AO, 2 contact, 4 GI, 8 SSR (Wc[14]); a.y: AO result (S), a.z: GI result (S); b.x AO strength, b.y GI strength
+void main() {
+    ivec2 q = ivec2(gl_GlobalInvocationID.xy), fs = textureSize(S[4], 0);
+    if (any(greaterThanEqual(q, fs))) return;
+    vec4 rm = texelFetch(S[8], q, 0), al = texelFetch(S[9], q, 0), nr = texelFetch(S[6], q, 0);
+    if (rm.z + rm.w == 0 && al.a == 0 && nr.z == 0) return;
+    float d = dz(q);
+    if (d == 0) return;
+    ivec2 hs = textureSize(S[10], 0), b = ivec2(floor((vec2(q) + 0.5) * 0.5 - 0.5));
+    vec2 f = (vec2(q) + 0.5) * 0.5 - 0.5 - vec2(b);
+    vec4 ao = vec4(0), gi = vec4(0), sr = vec4(0); float wa = 0;
+    for (int i = 0; i < 4; i++) {
+        ivec2 o = ivec2(i & 1, i >> 1), t = clamp(b + o, ivec2(0), hs - 1);
+        vec4 a = (pc.a.x & 3) != 0 ? texelFetch(S[pc.a.y], t, 0) : vec4(1, 1, d, 1), g = (pc.a.x & 4) != 0 ? texelFetch(S[pc.a.z], t, 0) : vec4(0, 0, 0, d);
+        float w = (o.x == 1 ? f.x : 1 - f.x) * (o.y == 1 ? f.y : 1 - f.y) * exp(-abs(((pc.a.x & 3) != 0 ? a.z : g.w) - d) / (0.03 * d)) + 1e-4;
+        ao += a * w; gi += g * w; wa += w;
+        if ((pc.a.x & 8) != 0) sr += imageLoad(Wc[14], t) * w;
+    }
+    ao /= wa; gi /= wa; sr /= wa;
+    vec4 h = imageLoad(Wc[7], q); vec3 c = lin(h.rgb);
+    if ((pc.a.x & 8) != 0) c = c * (1 - sr.a * nr.z) + sr.a * nr.w * sr.rgb;
+    float oa = (pc.a.x & 1) != 0 ? mix(1, ao.x, pc.b.x) : 1, oc = (pc.a.x & 2) != 0 ? ao.y : 1;
+    c = c * max(1 - rm.w * (1 - oa) - rm.z * (1 - oc), 0) + ((pc.a.x & 4) != 0 ? al.rgb * al.rgb * al.a * gi.rgb * pc.b.y : vec3(0));
+    imageStore(Wc[7], q, vec4(pow(c, vec3(1 / 2.2)), h.a));
+}
+#endif
+
+#ifdef SSR
+// Half-res reflections: one GGX-jittered ray per pixel (roughness <= 0.6), 28 perspective-correct screen steps, then 5 bisection steps against
+// the linear depth. rgb: the hit's linear radiance from this frame's colour; a: confidence (screen edge, back faces, roughness). Misses keep IBL.
+float izAt(float iz0, float iz1, float f) { return 1 / mix(iz0, iz1, f); }
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy), hs = imageSize(Wc[14]), fs = textureSize(S[4], 0);
+    if (any(greaterThanEqual(p, hs))) return;
+    ivec2 q = min(p * 2, fs - 1);
+    float d = dz(q), ro = texelFetch(S[8], q, 0).x; vec4 nr = texelFetch(S[6], q, 0);
+    if (d == 0 || nr.z <= 0.002 || ro > 0.6) { imageStore(Wc[14], p, vec4(0)); return; }
+    vec2 px = 1 / vec2(fs);
+    vec3 P = vpos((vec2(q) + 0.5) * px, d), N = oct(nr.xy), V = normalize(-P);
+    float u1 = ign(vec2(p)), u2 = fract(ign(vec2(p.y, p.x) + 13.7) + 0.618034), a2 = ro * ro * ro * ro;
+    float ct = sqrt((1 - u1) / (1 + (a2 - 1) * u1)), st = sqrt(max(1 - ct * ct, 0)), ph = 6.2831853 * u2;   // GGX half vector
+    vec3 Tg = normalize(cross(abs(N.y) < 0.99 ? vec3(0, 1, 0) : vec3(1, 0, 0), N)), Bt = cross(N, Tg), R = reflect(-V, Tg * (st * cos(ph)) + Bt * (st * sin(ph)) + N * ct);
+    if (dot(R, N) <= 0.01) R = reflect(-V, N);
+    vec3 X0 = P + N * (0.01 + 0.002 * d);
+    float z0 = dot(X0, F.camF.xyz), rz = dot(R, F.camF.xyz), len = 4 * d + 50;
+    if (rz < 0) len = min(len, (z0 - 0.1) / -rz);
+    float z1 = z0 + rz * len;
+    vec2 s0 = suv(X0), ds = suv(X0 + R * len) - s0;
+    float fm = 1;   // clipped to the screen
+    if (ds.x != 0) fm = min(fm, max((ds.x > 0 ? 1 - s0.x : -s0.x) / ds.x, 0));
+    if (ds.y != 0) fm = min(fm, max((ds.y > 0 ? 1 - s0.y : -s0.y) / ds.y, 0));
+    if (length(ds * fm * vec2(fs)) < 2) { imageStore(Wc[14], p, vec4(0)); return; }
+    float iz0 = 1 / z0, iz1 = 1 / z1, jt = fract(u1 * 5.23 + u2), fp = 0, hit = -1;
+    for (int j = 0; j < 28; j++) {
+        float f = fm * pow((float(j) + jt) / 28, 1.6), z = izAt(iz0, iz1, f), zb = dz(ivec2((s0 + ds * f) * vec2(fs)));
+        if (zb > 0 && z > zb + 0.002 * z) {
+            float lo = fp, hi = f;
+            for (int k = 0; k < 5; k++) { float m = 0.5 * (lo + hi), mb = dz(ivec2((s0 + ds * m) * vec2(fs))); if (mb > 0 && izAt(iz0, iz1, m) > mb) hi = m; else lo = m; }
+            float zh = izAt(iz0, iz1, hi), bh = dz(ivec2((s0 + ds * hi) * vec2(fs)));
+            if (bh > 0 && zh - bh < max(0.3, 0.03 * zh) + abs(zh - izAt(iz0, iz1, lo))) hit = hi;
+            break;
+        }
+        fp = f;
+    }
+    if (hit < 0) { imageStore(Wc[14], p, vec4(0)); return; }
+    vec2 hu = s0 + ds * hit; ivec2 hq = ivec2(hu * vec2(fs));
+    float e = min(min(hu.x, 1 - hu.x), min(hu.y, 1 - hu.y));
+    float conf = smoothstep(0, 0.06, e) * smoothstep(0.3, -0.1, dot(oct(texelFetch(S[6], hq, 0).xy), R)) * (1 - smoothstep(0.45, 0.6, ro));
+    imageStore(Wc[14], p, vec4(min(lin(textureLod(S[0], hu, 0).rgb), vec3(32)), conf));
+}
+#endif
+
+#ifdef ZCOPY
+// The linear depth so far (terrain, parts) for the ocean, which is drawn while the shared depth is still attached
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, imageSize(Wz[15])))) return;
+    imageStore(Wz[15], p, vec4(texelFetch(S[4], p, 0).r));
+}
+#endif
