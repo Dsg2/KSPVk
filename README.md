@@ -2,6 +2,17 @@
 
 A Vulkan scene renderer for Kerbal Space Program 1.12.5 (Windows, Direct3D 11).
 
+*(Click on the images and zoom in to see full resolution)*
+<img width="3846" height="752" alt="flight" src="https://github.com/user-attachments/assets/7bb8843c-5f4a-4135-b209-13dfb37731de" />
+
+<img width="3846" height="752" alt="runway" src="https://github.com/user-attachments/assets/757f6481-ebd9-45ca-af26-1bb4317bb5c1" />
+
+<img width="2564" height="752" alt="ksc" src="https://github.com/user-attachments/assets/75493478-ce94-456f-bd23-6ca24ca83db1" />
+
+<img width="3846" height="752" alt="cockpit" src="https://github.com/user-attachments/assets/89da1021-c77f-4670-aed4-763afaa38502" />
+
+<img width="2564" height="752" alt="mainmenu" src="https://github.com/user-attachments/assets/c6e238b6-3b10-42b8-a7af-3b50bccd621b" />
+
 KSPVk takes over drawing the 3D world from Unity: parts, scenery, interiors, PQS terrain, ocean, scaled planets, sun, atmosphere and the galaxy skybox. It draws them in Vulkan and composites the result into KSP's cameras. Unity still runs the game and draws the UI, particles, transparent effects and anything KSPVk doesn't understand.
 
 What you get is lower main-thread render cost, mainly in flight and in large craft scenes. The image is meant to match stock closely, not to improve on it.
@@ -12,13 +23,14 @@ What you get is lower main-thread render cost, mainly in flight and in large cra
 - About 200–450 MB of extra RAM or VRAM for KSPVk's copies of meshes and textures. On integrated GPUs this comes from system RAM.
 
 ## Install
-Copy `GameData/KSPVk` into KSP's `GameData` folder. Nothing else is needed. KSPVk never edits KSP's own `settings.cfg` or your saves.
+Download the mod on the release page.
+Extract and copy `KSPVk` into KSP's `GameData` folder. Nothing else is needed. KSPVk never edits KSP's own `settings.cfg` or your saves.
 
 To uninstall, delete `GameData/KSPVk`.
 
 ## Using it
 - **Settings window:** open it from the toolbar button (an orange "V") or with **Ctrl+Alt+F9**. Settings are saved to `GameData/KSPVk/PluginData/settings.cfg`.
-- **Turn KSPVk on or off:** **Ctrl+Alt+F11**. When it is off, KSP renders exactly as stock.
+- **Turn KSPVk on or off:** **O**. When it is off, KSP renders exactly as stock.
 - **Scenes:** choose where KSPVk is used. By default it is on in flight, the Space Center, the VAB and menus. It is off in the SPH and the Tracking Station, which were measured slower with KSPVk on.
 - **Families:** for each kind of object, you can choose whether Vulkan or Unity draws it.
 - **Texture size cap** (default 2048): KSPVk's texture copies are limited to this size, which saves memory. Unity's own textures are not affected.
