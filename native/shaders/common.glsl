@@ -1,6 +1,6 @@
 // Shared by all part shaders. Layouts mirror FrameU / MatIn / InstIn in native/core/scene.inl.
 #include "frame.glsl"
-layout(push_constant) uniform PC { vec4 r0, r1, r2; ivec4 ids; } pc;          // model rows; ids: material, instance, cascade, bone base (vec4 index)
+layout(push_constant) uniform PC { vec4 m0, m1, m2; ivec4 ids; } pc;          // model rows; ids: material, instance, cascade, bone base (vec4 index)
 #ifdef SHADOW_FN
 layout(set = 0, binding = 3) uniform sampler2DArrayShadow shadowMap;
 float shadowAt(vec3 w, float vz, vec3 n) {
@@ -19,14 +19,14 @@ float shadowAt(vec3 w, float vz, vec3 n) {
 layout(std430, set = 0, binding = 5) readonly buffer Bones { vec4 b[]; } BN;   // 3 world-space rows per bone
 layout(location = 5) in vec4 inW8; layout(location = 6) in uvec4 inJ;
 #endif
-vec3 xform(vec4 p, out vec4 r0, out vec4 r1, out vec4 r2) {
+vec3 xform(vec4 p, out vec4 m0, out vec4 m1, out vec4 m2) {
 #ifdef SKIN
-    r0 = vec4(0); r1 = vec4(0); r2 = vec4(0);
-    for (int i = 0; i < 4; i++) { int b = pc.ids.w + int(inJ[i]) * 3; r0 += inW8[i] * BN.b[b]; r1 += inW8[i] * BN.b[b + 1]; r2 += inW8[i] * BN.b[b + 2]; }
+    m0 = vec4(0); m1 = vec4(0); m2 = vec4(0);
+    for (int i = 0; i < 4; i++) { int b = pc.ids.w + int(inJ[i]) * 3; m0 += inW8[i] * BN.b[b]; m1 += inW8[i] * BN.b[b + 1]; m2 += inW8[i] * BN.b[b + 2]; }
 #else
-    r0 = pc.r0; r1 = pc.r1; r2 = pc.r2;
+    m0 = pc.m0; m1 = pc.m1; m2 = pc.m2;
 #endif
-    return vec3(dot(r0, p), dot(r1, p), dot(r2, p));
+    return vec3(dot(m0, p), dot(m1, p), dot(m2, p));
 }
 #endif
 #if defined(ENH) && defined(VERT)

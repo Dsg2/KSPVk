@@ -13,10 +13,10 @@ void main() {
     GBUF(N, kind == 2 ? 1 - tx.a * p.x : sqrt(2 / (p.x * 128 + 2)), 0);
     float ndl = max(0, dot(N, L)), ndh = max(0, dot(N, H));
     vec3 lc = F.lightCol.rgb, c;
-    if (kind == 2) {   // Unity BRDF1 (gamma); stock gi is the reflection probe only, no diffuse ambient
+    if (kind == 2) {   // Unity BRDF1 (gamma); ambient from the reflection probe only, as stock
         vec3 sp = MV(1).rgb; float omr = 1 - max(sp.r, max(sp.g, sp.b)), sm = tx.a * p.x, pr = 1 - sm, a = max(pr * pr, 0.002), a2 = a * a;
-        float nv = abs(dot(N, V)), lh = sat(dot(L, H)), fd = 2 * lh * lh * pr - 0.5, q = 1 - ndl, q5 = q * q * q * q * q, v5 = pow(1 - nv, 5);
-        float dif = (1 + fd * q5) * (1 + fd * v5) * ndl;
+        float nv = abs(dot(N, V)), lh = sat(dot(L, H)), fd = 2 * lh * lh * pr - 0.5, q = 1 - ndl, q5 = q * q * q * q * q, fv = pow(1 - nv, 5);
+        float dif = (1 + fd * q5) * (1 + fd * fv) * ndl;
         float vis = 0.5 / (ndl * (nv * (1 - a) + a) + nv * (ndl * (1 - a) + a) + 1e-5), dd = (ndh * a2 - ndh) * ndh + 1;
         float spec = sqrt(max(1e-4, vis * a2 * 0.31831 / (dd * dd + 1e-7) * 3.14159265)) * ndl * (dot(sp, sp) > 0 ? 1 : 0);
         float l5 = pow(1 - lh, 5);

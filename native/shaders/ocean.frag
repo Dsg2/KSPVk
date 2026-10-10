@@ -23,7 +23,7 @@ vec3 waves(vec3 q, float t, out float foam) {   // slope (x, z) in a plane, dive
 void ocean() {
     float d = inVz;
     if (d > F.misc.x) discard;
-    vec4 v5 = MV(5);
+    vec4 sh = MV(5);
     vec3 N0 = normalize(inN), V = normalize(F.camPos.xyz - inW), L = F.lightDir.xyz;
     vec3 q = inW - (atmOn() ? F.atmC.xyz : vec3(0)), w = pow(abs(N0), vec3(8)); w /= w.x + w.y + w.z;
     float f0, f1, f2, t = F.misc.y;
@@ -48,7 +48,7 @@ void ocean() {
     vec3 fl = 0.75 * (lc * max(dot(N0, L), 0) + irr);
     src = mix(src, fl, foam); al = mix(al, 1, foam);
     GBUF(N, pr, 0);
-    oCol = vec4(finish(src / max(al, 1e-3), spec * (1 - foam) / max(al, 1e-3), vec3(0), inW), al * (1 - v5.w));
+    oCol = vec4(finish(src / max(al, 1e-3), spec * (1 - foam) / max(al, 1e-3), vec3(0), inW), al * (1 - sh.w));
     gRM.zw = vec2(0);
     oDepth = d;
 }
@@ -59,14 +59,14 @@ void main() {
 #endif
     float d = inVz;
     if (d > F.misc.x) discard;
-    vec4 v4 = MV(4), v5 = MV(5), v6 = MV(6), v7 = MV(7), id = MV(9);
+    vec4 wv = MV(4), sh = MV(5), fo = MV(6), dn = MV(7), id = MV(9);
     vec3 dir = normalize(inUv.xyz), w = abs(dir), V = normalize(F.camPos.xyz - inW), N = normalize(inN);
-    float fadeW = 1 - ss(d, v6.z, v6.w), fres = pow(max(0, (1 - dot(N, V)) * v6.x), v6.y);
-    float fog = 1 - exp(d * v7.x * v7.y), fogA = 1 - exp(dir.x * v7.x * v7.y);
-    float t = F.misc.y, df = v4.w, disp = v4.x * F.misc.z;
-    vec3 p0 = dir * v4.z + disp, n = tri(tid(id.x), p0, w).rgb;
+    float fadeW = 1 - ss(d, fo.z, fo.w), fres = pow(max(0, (1 - dot(N, V)) * fo.x), fo.y);
+    float fog = 1 - exp(d * dn.x * dn.y), fogA = 1 - exp(dir.x * dn.x * dn.y);
+    float t = F.misc.y, df = wv.w, disp = wv.x * F.misc.z;
+    vec3 p0 = dir * wv.z + disp, n = tri(tid(id.x), p0, w).rgb;
     n = mix(n, n.yzx, disp) * (1 + 39 * sat(3 * fog));
-    vec3 q = p0 + n * v4.y + F.misc.w * df + vec3(0.3 * cos(t * df + 0.2), 0.2 * sin(-df * t), 0.4 * cos(-df * t));
+    vec3 q = p0 + n * wv.y + F.misc.w * df + vec3(0.3 * cos(t * df + 0.2), 0.2 * sin(-df * t), 0.4 * cos(-df * t));
     int t1 = tid(id.y);
     vec3 c = (T(t1, -q.xy) * w.z + T(t1, q.zy) * w.x + T(t1, q.zx) * w.y).rgb;
     c = mix(MV(1).rgb, c * MV(0).rgb, fadeW);
@@ -75,7 +75,7 @@ void main() {
     if (ramp >= 0) c = mix(c, texB(tex[ramp], vec2(dot(MV(8).xyz, dir), 0.5)).rgb, fog);
     GBUF(N, 0.1, 0);
     vec3 L = F.lightDir.xyz, lc = F.lightCol.rgb * shadowAt(inW, d, N);
-    float a = (1 + fadeW * (mix(v5.z, 1, fres) - 1)) * (1 - v5.w);
-    oCol = vec4(lc * c * max(0, dot(N, L)) + lc * MV(2).rgb * pow(max(0, dot(N, normalize(L + V))), v5.x * 128) * (1 - v5.w) * v5.y, a);
+    float a = (1 + fadeW * (mix(sh.z, 1, fres) - 1)) * (1 - sh.w);
+    oCol = vec4(lc * c * max(0, dot(N, L)) + lc * MV(2).rgb * pow(max(0, dot(N, normalize(L + V))), sh.x * 128) * (1 - sh.w) * sh.y, a);
     oDepth = d;
 }

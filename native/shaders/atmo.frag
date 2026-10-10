@@ -44,19 +44,19 @@ void main() {
     }
 #endif
     vec3 cam = MV(1).xyz - MV(0).xyz, L = MV(2).xyz, iw = MV(3).xyz;
-    vec4 a = MV(4), b = MV(5), c6 = MV(6);
+    vec4 a = MV(4), b = MV(5), sp = MV(6);
     vec3 ray = inW - MV(0).xyz - cam; float far = length(ray); vec3 dir = ray / far;
-    float start = -b.w * sc(1 - dot(dir, cam) / length(cam)), depth = exp(c6.x * abs(a.y - a.x));
-    float seg = far / c6.y, sl = seg * b.z;
+    float start = -b.w * sc(1 - dot(dir, cam) / length(cam)), depth = exp(sp.x * abs(a.y - a.x));
+    float seg = far / sp.y, sl = seg * b.z;
     vec3 s = cam + dir * seg * 0.5, kk = iw * b.x + b.y, fr = vec3(0);
     for (int i = 0; i < 3; i++) {
-        float h = length(s), dep = exp(c6.x * abs(a.y - h));
+        float h = length(s), dep = exp(sp.x * abs(a.y - h));
         float sct = depth * start + dep * (-b.w * sc(1 - dot(L, s) / h) + b.w * sc(1 - dot(dir, s) / h));
         fr += exp(-sct * kk) * dep * sl;
         s += dir * seg;
     }
-    vec3 v3 = cam - inObj;
-    float cs = dot(L, v3) / length(v3), g = c6.z, g2 = c6.w, c2 = 1 + cs * cs;
+    vec3 tc = cam - inObj;
+    float cs = dot(L, tc) / length(tc), g = sp.z, g2 = sp.w, c2 = 1 + cs * cs;
     float mie = 1.5 * ((1 - g2) / (2 + g2)) * c2 / pow(1 + g2 - 2 * g * cs, 1.5);
     vec3 c = 0.75 * c2 * fr * iw * a.z + mie * fr * a.w;
     vec4 u = MV(7);

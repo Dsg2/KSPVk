@@ -1,6 +1,6 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
-// Uber-shader for opaque objects: KSP/* parts, KSP/Scenery/*, Legacy Shaders/*, Standard (both setups). Maths decoded from the stock DXBC, gamma space.
+// Uber-shader for opaque objects: KSP/* parts, KSP/Scenery/*, Legacy Shaders/*, Standard (both setups). Gamma space, like stock.
 #define SHADOW_FN
 #include "common.glsl"
 layout(constant_id = 0) const bool CUTOFF = false;
@@ -161,7 +161,7 @@ void main() {
         vec4 L = texB(tex[mt.tex.z], inUv1 * mt.emisST.xy + mt.emisST.zw);
         float occ = pow(L.w, mt.q.z), g = 2 * alb.a * mt.specColor.r;
         vec3 lc = L.x * mt.color.rgb + L.y * mt.emisColor.rgb, k = lc * (1 - occ) + occ, a2 = alb.rgb * inCol.rgb * k;
-        col = alb.rgb * (lc + F.ambient.rgb * L.z * mt.q.x) * k;   // glstate_lightmodel_ambient is half the ambient; the shader doubles it
+        col = alb.rgb * (lc + F.ambient.rgb * L.z * mt.q.x) * k;   // ambient x2 matches stock brightness
         col += (a2 * max(0, dot(N, F.lightDir.xyz)) + mt.specColor.rgb * pow(max(0, dot(N, normalize(F.lightDir.xyz + V))), mt.p.x * 128) * g) * sun;
         for (int i = 0; i < F.nLights.x; i++) { float a; vec3 Ll = lightDir(F.lights[i], pt.lm.z, a); if (a > 0) col += (a2 * max(0, dot(N, Ll)) + mt.specColor.rgb * pow(max(0, dot(N, normalize(Ll + V))), mt.p.x * 128) * g) * F.lights[i].col.rgb * a; }
         oCol = vec4(col + emis * pt.p.y, 1);
@@ -172,7 +172,7 @@ void main() {
         float sm = (fl & F_GLOSSA) != 0 ? alb.a * ((fl & F_GROUND) != 0 ? 1 : mt.x0.z) : (fl & F_GLOSSMAP) != 0 ? g.a * mt.x0.z : mt.x0.y, omr;
         vec3 sc;
         if ((fl & F_STDSPEC) != 0) { sc = (fl & F_GLOSSMAP) != 0 ? g.rgb : mt.specColor.rgb; omr = 1 - max(sc.r, max(sc.g, sc.b)); }
-        else { float met = (fl & F_GLOSSMAP) != 0 ? g.r : mt.x0.x; sc = mix(vec3(0.220916301), alb.rgb, met); omr = 0.779083699 * (1 - met); }
+        else { float met = (fl & F_GLOSSMAP) != 0 ? g.r : mt.x0.x; sc = mix(vec3(0.220916301), alb.rgb, met); omr = 0.779083699 * (1 - met); }   // Unity's gamma-space dielectric F0
         vec3 dc = alb.rgb * omr;
         float occ = (fl & F_GROUND) != 0 ? 1 : mix(1, texB(tex[mt.tex2.x], inUv * mt.mainST.xy + mt.mainST.zw).g, mt.x0.w);
         float pr = 1 - sm, r = max(pr * pr, 0.002), nv = abs(dot(N, V));

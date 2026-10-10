@@ -1,6 +1,6 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
-// Data-driven PQS terrain (PQS Main / Main Optimised / Sphere Projection [AP]); maths from the stock DXBC.
+// Data-driven PQS terrain (PQS Main / Main Optimised / Sphere Projection [AP]).
 // v[0..3] band (lo.xy, hi.zw) | v[4..7] tilings (near, far, bumpNear, bumpFar) | v[8..11] ids (same order)
 // v[12] steep tilings (near, far), single-blend flag | v[13] steep ids (tex, bump) | v[14] groundStart, groundEnd, steepStart, steepEnd
 // v[15] powerNear, powerFar, steepPower, planetOpacity | v[16] contrast, saturation, fogOn, nBands | v[17] tint
@@ -24,7 +24,7 @@ void terrain() {
     float d = inVz;
     if (d > F.misc.x) discard;
     vec4 a = MV(14), pw = MV(15), cs = MV(16), tint = MV(17), fg = MV(18);
-    vec3 v6 = cs.x * (mix(vec3(dot(inCol.rgb, vec3(0.299, 0.587, 0.114))), inCol.rgb, cs.y) - tint.rgb * tint.a) + tint.rgb * tint.a;
+    vec3 vcol = cs.x * (mix(vec3(dot(inCol.rgb, vec3(0.299, 0.587, 0.114))), inCol.rgb, cs.y) - tint.rgb * tint.a) + tint.rgb * tint.a;
     vec3 p = (inW + MV(20).xyz) * 1e-5, N0 = normalize(inN), V = normalize(F.camPos.xyz - inW), w = pow(abs(N0), vec3(4));
     w /= w.x + w.y + w.z;
     float h = inCol.a, sD = ss(d, a.x, a.y), nk = (1 - sD) * pw.x, fk = sD * pw.y;
@@ -51,7 +51,7 @@ void terrain() {
     }
     c /= max(ws, 1e-5); n /= max(ws, 1e-5);
     if (gb >= 0) n = triN(gb, p * MV(21).y, w);
-    c = mix(v6, v6 * c, nk + fk);
+    c = mix(vcol, vcol * c, nk + fk);
     vec4 st = MV(12); int stT = tid(MV(13).x), stB = tid(MV(13).y);
     float sw = (1 - ss(d, a.z, a.w)) * sat(inUv.w * pw.z), sn = st.z > 0 ? sw : (1 - sD) * sw, sf = st.z > 0 ? 0 : sD * sw;
     if (stT >= 0) { c = mix(c, tri(stT, p * st.x, w).rgb, sn); c = mix(c, tri(stT, p * st.y, w).rgb, sf); }
@@ -112,7 +112,7 @@ void main() {
     if (d > F.misc.x) discard;
     vec4 a = MV(14), pw = MV(15), cs = MV(16), tint = MV(17), fg = MV(18);
     float lum = dot(inCol.rgb, vec3(0.299, 0.587, 0.114));
-    vec3 v6 = cs.x * (mix(vec3(lum), inCol.rgb, cs.y) - tint.rgb * tint.a) + tint.rgb * tint.a;
+    vec3 vcol = cs.x * (mix(vec3(lum), inCol.rgb, cs.y) - tint.rgb * tint.a) + tint.rgb * tint.a;
     vec3 p = (inW + MV(20).xyz) * 1e-5, w = abs(normalize(inN));
     float h = inCol.a, sD = ss(d, a.x, a.y), nk = (1 - sD) * pw.x, fk = sD * pw.y;
     vec3 c = vec3(0), n = vec3(0);
@@ -127,7 +127,7 @@ void main() {
         }
     }
     if (gb >= 0) n = triN(gb, p * MV(21).y, w);
-    c = mix(v6, v6 * c, nk + fk);
+    c = mix(vcol, vcol * c, nk + fk);
     vec4 st = MV(12); int stT = tid(MV(13).x), stB = tid(MV(13).y);
     float sw = (1 - ss(d, a.z, a.w)) * sat(inUv.w * pw.z), sn = st.z > 0 ? sw : (1 - sD) * sw, sf = st.z > 0 ? 0 : sD * sw;
     if (stT >= 0) { c = mix(c, tri(stT, p * st.x, w).rgb, sn); c = mix(c, tri(stT, p * st.y, w).rgb, sf); }
@@ -142,7 +142,7 @@ void main() {
         c = mix(c, texB(tex[ramp], vec2(sd, fg.w)).rgb, max(0, 1 - exp(d * fg.x * fg.y)));
     }
     float uw = MV(21).w < 0 ? 1 : 0, fo = d / MV(21).z;
-    if (uw > 0 && ramp >= 0) c = mix(c, texB(tex[ramp], vec2(0, 0.25)).rgb, sat(fo));   // stock samples uv4.x, which PQS leaves 0
+    if (uw > 0 && ramp >= 0) c = mix(c, texB(tex[ramp], vec2(0, 0.25)).rgb, sat(fo));   // underwater: fog ramp at u = 0
     vec3 lc = F.lightCol.rgb * shadowAt(inW, d, N0);
     float al = pw.w + uw * (1 - (1 - pw.w) * min(1.01 - sat(fo * 0.5), 1) - pw.w);
     oCol = vec4(lc * c * max(0, dot(N, F.lightDir.xyz)) + c * F.ambient.rgb, al);

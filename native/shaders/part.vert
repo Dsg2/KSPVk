@@ -8,9 +8,9 @@ layout(location = 0) out vec3 oW; layout(location = 1) out vec3 oN; layout(locat
 layout(location = 3) out vec2 oUv; layout(location = 4) out vec4 oCol; layout(location = 5) out float oVz;
 layout(location = 6) out vec2 oUv1; layout(location = 7) out vec3 oObj;
 void main() {
-    vec4 r0, r1, r2;
-    oW = xform(vec4(inPos, 1), r0, r1, r2);
-    vec3 c0 = vec3(r0.x, r1.x, r2.x), c1 = vec3(r0.y, r1.y, r2.y), c2 = vec3(r0.z, r1.z, r2.z);
+    vec4 m0, m1, m2;
+    oW = xform(vec4(inPos, 1), m0, m1, m2);
+    vec3 c0 = vec3(m0.x, m1.x, m2.x), c1 = vec3(m0.y, m1.y, m2.y), c2 = vec3(m0.z, m1.z, m2.z);
     float s = dot(c0, cross(c1, c2)) < 0 ? -1.0 : 1.0;
     oN = s * (inNrm.x * cross(c1, c2) + inNrm.y * cross(c2, c0) + inNrm.z * cross(c0, c1));   // cofactor = inverse-transpose up to scale
     oT = vec4(inTan.x * c0 + inTan.y * c1 + inTan.z * c2, inTan.w * s);
