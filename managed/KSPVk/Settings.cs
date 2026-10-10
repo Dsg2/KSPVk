@@ -29,8 +29,8 @@ namespace KSPVk
         public static readonly int[] TierFlags = { 0, Medium, Medium | EfHiz | EfContact | EfSsgi | EfSpotSh | EfFft | EfPom | EfSsr };
         public static int Enh = EnvEnh, Tonemap;
         public static float Ev, EvRange = 1, ExpKey = 0.18f, Bloom = 0.05f, BloomThreshold = 1, TaaWeight = 0.1f, AmbFill = 0.3f, IblScale = 1, SunSoft = 1, AoStrength = 1, GiStrength = 1, SkyBright = 3;
-        public static string ToggleKey = DefToggleKey;   // enables / disables KSPVk: "Ctrl+Alt+F11" style, "None" for no key
-        const string DefToggleKey = "Ctrl+Alt+F11";
+        public static string ToggleKey = DefToggleKey;   // enables / disables KSPVk: "O" style, "None" for no key
+        const string DefToggleKey = "O";
         public static float RenderScale = EnvRenderScale;   // scene resolution / screen, 0.5..1 (all modes)
         public static int Tier => Array.IndexOf(TierFlags, Enh);   // -1: custom feature set
         static int EnvEnh => int.TryParse(Environment.GetEnvironmentVariable("KSPVK_ENHANCED"), out int t) && t > 0 ? TierFlags[Math.Min(t, TierFlags.Length - 1)] : 0;
